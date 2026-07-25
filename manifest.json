@@ -5,14 +5,11 @@
   "version": "1.0.0",
   "author": "Omarchy",
   "license": "MIT",
-  "description": "Notification daemon, popups, and history",
+  "description": "Bar popup for pending and recent Omarchy notifications",
   "kinds": [
-    "service",
     "bar-widget"
   ],
-  "keepLoaded": true,
   "entryPoints": {
-    "service": "Service.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {

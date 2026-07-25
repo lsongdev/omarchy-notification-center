@@ -25,7 +25,7 @@ BarWidget {
 
   // Look up the long-running notifications service through the shell host.
   readonly property var hostShell: bar && bar.shell ? bar.shell : null
-  readonly property var notificationService: hostShell?.serviceFor("omacom.notification-center")
+  readonly property var notificationService: hostShell?.firstPartyServiceFor("omarchy.notifications")
 
   function isChromiumDerived(app, appIcon) {
     return NotificationLogic.isChromiumDerived(app, appIcon)
