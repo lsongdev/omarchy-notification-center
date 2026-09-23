@@ -9,11 +9,11 @@ bar popup feel like a native Omarchy panel.
 It provides:
 
 - one unified notification list instead of separate Pending / Recently tabs;
-- unread notifications highlighted in the same list;
+- live notifications highlighted in the same list;
 - a Do Not Disturb switch using Omarchy's native `ToggleSwitch`;
 - a compact panel width matching the Network, Bluetooth and Audio panels;
-- per-notification dismissal;
-- `Mark all as read` and `Clear` actions at the bottom.
+- dismissal for notifications that are still live;
+- `Dismiss all` and `Clear` actions at the bottom.
 
 The notification daemon, toast popups, history storage and DND state remain
 owned by Omarchy itself. This plugin is only a UI for browsing and managing
@@ -28,11 +28,12 @@ Current Omarchy persists notification state under
 - files under `history/` are notifications that have left the screen.
 
 The plugin reads those persisted files and presents both stages as one
-continuous notification feed. Live notifications are treated as unread.
+continuous notification feed. It deliberately does not invent a separate
+read/unread state that Omarchy itself does not expose.
 
 Actions use Omarchy's public notification IPC:
 
-- **Mark all as read** calls `omarchy-shell notifications dismissAll`, which
+- **Dismiss all** calls `omarchy-shell notifications dismissAll`, which
   lets Omarchy archive live notifications into history;
 - **Clear** dismisses live notifications and clears recorded history;
 - the DND switch uses `omarchy-shell notifications toggleDnd`.
@@ -61,10 +62,10 @@ Validate the manifest and entry point:
 omarchy plugin validate .
 ```
 
-After changing plugin files:
+Files under `~/.config/omarchy/plugins/` are reloaded automatically while
+developing. For a clean full-shell reload after larger QML changes:
 
 ```bash
-omarchy plugin rescan
 omarchy restart shell
 ```
 
