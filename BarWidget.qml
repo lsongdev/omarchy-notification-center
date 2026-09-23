@@ -11,33 +11,15 @@ BarWidget {
   moduleName: "omacom.notification-center"
 
   property bool popupOpen: false
-  property var historyRows: []
+  property bool dnd: false
   property var rows: []
+  property int unreadCount: 0
+
+  readonly property string home: Quickshell.env("HOME")
+  readonly property string notificationDir: home + "/.local/state/omarchy/notifications"
 
   function close() {
     popupOpen = false
-  }
-
-  // Omarchy currently keeps only live notifications in popupModel. Once a
-  // popup leaves the screen its persisted JSON file is moved into historyDir.
-  readonly property var hostShell: bar && bar.shell ? bar.shell : null
-  readonly property var notificationService: hostShell && hostShell.firstPartyServiceFor
-    ? hostShell.firstPartyServiceFor("omarchy.notifications") : null
-
-  readonly property var popupModel: notificationService && notificationService.popupModel
-    ? notificationService.popupModel : null
-  readonly property int unreadCount: popupModel ? popupModel.count : 0
-  readonly property string historyDir: notificationService && notificationService.historyDir
-    ? String(notificationService.historyDir) : ""
-
-  readonly property bool dndSupported: !!notificationService
-    && typeof notificationService.doNotDisturb === "boolean"
-    && typeof notificationService.setDoNotDisturb === "function"
-  readonly property bool dnd: dndSupported && notificationService.doNotDisturb
-
-  function toggleDnd() {
-    if (dndSupported)
-      notificationService.setDoNotDisturb(!notificationService.doNotDisturb)
   }
 
   function sanitizeBody(s, app, appIcon) {
@@ -52,75 +34,56 @@ BarWidget {
     return Quickshell.iconPath(value, true)
   }
 
-  function rowKey(row) {
-    if (!row) return ""
-    var originalId = row.originalId !== undefined && row.originalId !== null
-      ? row.originalId : row.id
-    return String(originalId || 0) + ":" + String(row.timestamp || 0)
+  function refresh() {
+    if (stateReader.running) return
+
+    stateReader.command = [
+      "bash", "-c",
+      "printf 'D\\t'; " +
+      "if [[ -f \"$1/../notifications.json\" ]]; then " +
+      "  grep -o '\"dnd\"[[:space:]]*:[[:space:]]*[^,}]*' \"$1/../notifications.json\" | " +
+      "  sed -E 's/.*:[[:space:]]*(true|false).*/\\1/'; " +
+      "else printf 'false\\n'; fi; " +
+      "for f in \"$1\"/*.json; do " +
+      "  [[ -e $f ]] || continue; printf 'L\\t'; cat \"$f\"; printf '\\n'; " +
+      "done; " +
+      "for f in \"$1/history\"/*.json; do " +
+      "  [[ -e $f ]] || continue; printf 'H\\t'; cat \"$f\"; printf '\\n'; " +
+      "done",
+      "--", root.notificationDir
+    ]
+    stateReader.running = true
   }
 
-  function rebuildRows() {
-    var merged = []
-    var positions = ({})
-
-    function add(row) {
-      if (!row) return
-      var key = root.rowKey(row)
-      if (positions[key] !== undefined) {
-        // Prefer the live version during the short archive transition.
-        if (row.isLive) merged[positions[key]] = row
-        return
-      }
-      positions[key] = merged.length
-      merged.push(row)
-    }
-
-    for (var h = 0; h < root.historyRows.length; ++h)
-      add(root.historyRows[h])
-
-    var model = root.popupModel
-    if (model) {
-      for (var i = 0; i < model.count; ++i) {
-        var live = model.get(i)
-        if (!live) continue
-        add({
-          sourceIndex: i,
-          isLive: true,
-          id: live.id !== undefined ? live.id : 0,
-          originalId: live.originalId !== undefined ? live.originalId : live.id,
-          app: String(live.appName || live.app || ""),
-          appIcon: String(live.appIcon || ""),
-          summary: String(live.summary || ""),
-          body: String(live.body || ""),
-          image: String(live.image || ""),
-          urgency: Number(live.urgency === undefined ? 1 : live.urgency),
-          timestamp: Number(live.timestamp || 0)
-        })
-      }
-    }
-
-    merged.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0) })
-    root.rows = merged
-  }
-
-  function parseHistory(raw) {
-    var parsed = []
+  function parseState(raw) {
+    var nextRows = []
+    var live = 0
     var lines = String(raw || "").split("\n")
 
     for (var i = 0; i < lines.length; ++i) {
-      var line = lines[i].trim()
-      if (!line) continue
+      var line = lines[i]
+      if (line.length < 2) continue
+
+      if (line.indexOf("D\t") === 0) {
+        root.dnd = line.substring(2).trim() === "true"
+        continue
+      }
+
+      var isLive = line.indexOf("L\t") === 0
+      var isHistory = line.indexOf("H\t") === 0
+      if (!isLive && !isHistory) continue
 
       try {
-        var value = JSON.parse(line)
+        var value = JSON.parse(line.substring(2))
         if (!value || typeof value !== "object") continue
 
-        parsed.push({
-          sourceIndex: -1,
-          isLive: false,
+        if (isLive) live++
+
+        nextRows.push({
+          isLive: isLive,
           id: value.id !== undefined ? value.id : 0,
           originalId: value.originalId !== undefined ? value.originalId : value.id,
-          app: String(value.app || ""),
+          app: String(value.app || value.appName || ""),
           appIcon: String(value.appIcon || ""),
           summary: String(value.summary || ""),
           body: String(value.body || ""),
@@ -129,85 +92,84 @@ BarWidget {
           timestamp: Number(value.timestamp || 0)
         })
       } catch (e) {
-        // Ignore a partially-written history file and pick it up next refresh.
+        // Ignore a file caught between write/rename and pick it up next poll.
       }
     }
 
-    parsed.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0) })
-
-    var limit = notificationService && notificationService.historyLimit
-      ? Number(notificationService.historyLimit) : 10
-    root.historyRows = parsed.slice(0, limit)
-    rebuildRows()
+    nextRows.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0) })
+    root.unreadCount = live
+    root.rows = nextRows
   }
 
-  function refreshHistory() {
-    if (!root.historyDir || historyReader.running) return
-    historyReader.command = ["bash", "-c",
-      "awk 1 \"$1\"/*.json 2>/dev/null || true", "--", root.historyDir]
-    historyReader.running = true
+  function toggleDnd() {
+    if (dndProc.running) return
+    dndProc.command = ["omarchy-shell", "notifications", "toggleDnd"]
+    dndProc.running = true
   }
 
   function markAllRead() {
-    if (!notificationService || typeof notificationService.clearPopups !== "function") return
-
-    // Omarchy archives dismissed popups into historyDir, so clearing the live
-    // popup stack is the closest native equivalent of marking everything read.
-    notificationService.clearPopups()
-    rebuildRows()
+    if (actionProc.running) return
+    actionProc.command = ["omarchy-shell", "notifications", "dismissAll"]
+    actionProc.running = true
   }
 
   function clearAll() {
-    if (!notificationService) return
-
-    if (typeof notificationService.clearPopups === "function")
-      notificationService.clearPopups()
-    if (typeof notificationService.clearHistory === "function")
-      notificationService.clearHistory()
-
-    root.historyRows = []
-    root.rows = []
+    if (actionProc.running) return
+    actionProc.command = [
+      "bash", "-c",
+      "omarchy-shell notifications dismissAll >/dev/null && " +
+      "omarchy-shell notifications clear >/dev/null"
+    ]
+    actionProc.running = true
   }
 
   function dismiss(row) {
-    if (!row || !row.isLive || !notificationService
-        || typeof notificationService.dismissPopup !== "function") return
-
-    notificationService.dismissPopup(row.sourceIndex)
+    if (!row || !row.isLive || actionProc.running) return
+    actionProc.command = ["omarchy-shell", "notifications", "dismiss", String(row.summary || "")]
+    actionProc.running = true
   }
 
-  onPopupOpenChanged: {
-    if (popupOpen) {
-      refreshHistory()
-      rebuildRows()
-    }
-  }
+  onPopupOpenChanged: if (popupOpen) refresh()
+
+  Component.onCompleted: refresh()
 
   Timer {
-    interval: 500
+    interval: 1000
     repeat: true
-    running: root.popupOpen
-    onTriggered: root.refreshHistory()
+    running: true
+    onTriggered: root.refresh()
   }
 
   Process {
-    id: historyReader
+    id: stateReader
     running: false
 
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.parseHistory(text)
+      onStreamFinished: root.parseState(text)
     }
   }
 
-  Connections {
-    target: root.popupModel
+  Process {
+    id: dndProc
+    running: false
 
-    function onCountChanged() { root.rebuildRows() }
-    function onDataChanged() { root.rebuildRows() }
-    function onRowsInserted() { root.rebuildRows() }
-    function onRowsRemoved() { root.rebuildRows() }
-    function onModelReset() { root.rebuildRows() }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var state = String(text || "").trim()
+        if (state === "on" || state === "off")
+          root.dnd = state === "on"
+      }
+    }
+
+    onExited: root.refresh()
+  }
+
+  Process {
+    id: actionProc
+    running: false
+    onExited: root.refresh()
   }
 
   readonly property string icon: {
@@ -219,8 +181,7 @@ BarWidget {
   readonly property color colForeground: Color.foreground
   readonly property color colDim: Qt.darker(Color.foreground, 1.4)
   readonly property color colBorder: Style.normalBorderFor(Color.foreground, Color.accent)
-  readonly property int cardRadius: notificationService && notificationService.cornerRadius
-    ? notificationService.cornerRadius : Style.cornerRadius
+  readonly property int cardRadius: Style.cornerRadius
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -270,7 +231,6 @@ BarWidget {
 
         ToggleSwitch {
           id: dndSwitch
-          visible: root.dndSupported
           checked: root.dnd
           foreground: root.colForeground
           onToggled: root.toggleDnd()
@@ -297,7 +257,8 @@ BarWidget {
           id: rowCard
           required property var modelData
 
-          readonly property string smallIconSource: root.notificationIconSource(modelData.image || modelData.appIcon)
+          readonly property string iconValue: String(modelData.image || modelData.appIcon || "")
+          readonly property string smallIconSource: root.notificationIconSource(iconValue)
           readonly property bool hasIcon: smallIconSource.length > 0
           readonly property string sanitizedBody: root.sanitizeBody(
             modelData.body, modelData.app, modelData.appIcon)
