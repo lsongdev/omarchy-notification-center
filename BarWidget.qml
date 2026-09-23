@@ -14,10 +14,7 @@ BarWidget {
   property var rows: []
   property int liveCount: 0
 
-  readonly property var hostShell: bar && bar.shell ? bar.shell : null
-  readonly property var notificationService: hostShell && hostShell.firstPartyServiceFor
-    ? hostShell.firstPartyServiceFor("omarchy.notifications") : null
-  readonly property bool dnd: notificationService ? notificationService.doNotDisturb : false
+  property bool dnd: false
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string notificationDir: home + "/.local/state/omarchy/notifications"
@@ -43,6 +40,8 @@ BarWidget {
 
     stateReader.command = [
       "bash", "-c",
+      "dnd=$(omarchy-shell notifications dndState 2>/dev/null || printf 'off'); " +
+      "printf 'D\\t%s\\n' \"$dnd\"; " +
       "for f in \"$1\"/*.json; do " +
       "  [[ -e $f ]] || continue; printf 'L\\t'; cat \"$f\"; printf '\\n'; " +
       "done; " +
@@ -62,6 +61,11 @@ BarWidget {
     for (var i = 0; i < lines.length; ++i) {
       var line = lines[i]
       if (line.length < 2) continue
+
+      if (line.indexOf("D\t") === 0) {
+        root.dnd = line.substring(2).trim() === "on"
+        continue
+      }
 
       var isLive = line.indexOf("L\t") === 0
       var isHistory = line.indexOf("H\t") === 0
@@ -96,8 +100,9 @@ BarWidget {
   }
 
   function toggleDnd() {
-    if (notificationService)
-      notificationService.setDoNotDisturb(!notificationService.doNotDisturb)
+    if (dndProc.running) return
+    dndProc.command = ["omarchy-shell", "notifications", "toggleDnd"]
+    dndProc.running = true
   }
 
   function dismissAll() {
@@ -141,6 +146,22 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: root.parseState(text)
     }
+  }
+
+  Process {
+    id: dndProc
+    running: false
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var state = String(text || "").trim()
+        if (state === "on" || state === "off")
+          root.dnd = state === "on"
+      }
+    }
+
+    onExited: root.refresh()
   }
 
   Process {
