@@ -21,18 +21,25 @@ that state.
 
 ## Notification state
 
-Current Omarchy keeps notifications in two stages:
+Current Omarchy persists notification state under
+`~/.local/state/omarchy/notifications/`:
 
-- `popupModel` contains notifications that are still live on screen;
-- once a popup leaves the screen, Omarchy archives it under `historyDir`.
+- JSON files directly in that directory are notifications still live on screen;
+- files under `history/` are notifications that have left the screen.
 
-The UI presents both stages as one continuous notification feed. Live
-notifications are treated as unread; **Mark all as read** dismisses the live
-popup stack, which lets Omarchy archive those notifications into history.
-**Clear** removes both live notifications and stored history.
+The plugin reads those persisted files and presents both stages as one
+continuous notification feed. Live notifications are treated as unread.
+
+Actions use Omarchy's public notification IPC:
+
+- **Mark all as read** calls `omarchy-shell notifications dismissAll`, which
+  lets Omarchy archive live notifications into history;
+- **Clear** dismisses live notifications and clears recorded history;
+- the DND switch uses `omarchy-shell notifications toggleDnd`.
 
 The plugin does not replace the notification daemon or maintain a second
-notification database.
+notification database, and it does not depend on private first-party service
+models.
 
 ## Install
 
