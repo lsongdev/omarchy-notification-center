@@ -31,12 +31,12 @@ The plugin reads those persisted files and presents both stages as one
 continuous notification feed. It deliberately does not invent a separate
 read/unread state that Omarchy itself does not expose.
 
-Actions use Omarchy's public notification IPC:
+The plugin uses Omarchy's public boundaries rather than private service models:
 
+- DND binds to the notification service proxy exposed to third-party bar widgets;
 - **Dismiss all** calls `omarchy-shell notifications dismissAll`, which
   lets Omarchy archive live notifications into history;
-- **Clear** dismisses live notifications and clears recorded history;
-- the DND switch uses `omarchy-shell notifications toggleDnd`.
+- **Clear** dismisses live notifications and clears recorded history.
 
 The plugin does not replace the notification daemon or maintain a second
 notification database, and it does not depend on private first-party service
