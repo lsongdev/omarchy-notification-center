@@ -39,11 +39,8 @@ BarWidget {
 
     stateReader.command = [
       "bash", "-c",
-      "printf 'D\\t'; " +
-      "if [[ -f \"$1/../notifications.json\" ]]; then " +
-      "  grep -o '\"dnd\"[[:space:]]*:[[:space:]]*[^,}]*' \"$1/../notifications.json\" | " +
-      "  sed -E 's/.*:[[:space:]]*(true|false).*/\\1/'; " +
-      "else printf 'false\\n'; fi; " +
+      "dnd=$(omarchy-shell notifications dndState 2>/dev/null || printf 'off'); " +
+      "printf 'D\\t%s\\n' \"$dnd\"; " +
       "for f in \"$1\"/*.json; do " +
       "  [[ -e $f ]] || continue; printf 'L\\t'; cat \"$f\"; printf '\\n'; " +
       "done; " +
