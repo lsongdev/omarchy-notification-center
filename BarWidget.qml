@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "NotificationLogic.js" as NotificationLogic
@@ -9,26 +10,17 @@ BarWidget {
   id: root
   moduleName: "omacom.notification-center"
 
-
   property bool popupOpen: false
-  function close() { popupOpen = false }
+  property var rows: []
+  property int liveCount: 0
 
-  // Always default to the pending tab when there's anything unseen, no
-  // matter how the popup was opened (click, keybind/IPC, or the close
-  // path). Keeps the spec from drifting based on the user's last manual
-  // tab selection.
-  onPopupOpenChanged: {
-    if (popupOpen) {
-      activeTab = pendingCount > 0 ? "pending" : "past"
-    }
-  }
+  property bool dnd: false
 
-  // Look up the long-running notifications service through the shell host.
-  readonly property var hostShell: bar && bar.shell ? bar.shell : null
-  readonly property var notificationService: hostShell?.firstPartyServiceFor("omarchy.notifications")
+  readonly property string home: Quickshell.env("HOME")
+  readonly property string notificationDir: home + "/.local/state/omarchy/notifications"
 
-  function isChromiumDerived(app, appIcon) {
-    return NotificationLogic.isChromiumDerived(app, appIcon)
+  function close() {
+    popupOpen = false
   }
 
   function sanitizeBody(s, app, appIcon) {
@@ -43,28 +35,151 @@ BarWidget {
     return Quickshell.iconPath(value, true)
   }
 
-  readonly property int pendingCount: notificationService ? notificationService.pendingModel.count : 0
-  readonly property int pastCount: notificationService ? notificationService.pastModel.count : 0
-  readonly property bool dnd: notificationService ? notificationService.doNotDisturb : false
+  function refresh() {
+    if (stateReader.running) return
 
-  // Which tab is active in the popup. Auto-selects pending when there's
-  // something unseen; otherwise opens past.
-  property string activeTab: "pending"
+    stateReader.command = [
+      "bash", "-c",
+      "dnd=$(omarchy-shell notifications dndState 2>/dev/null || printf 'off'); " +
+      "printf 'D\\t%s\\n' \"$dnd\"; " +
+      "for f in \"$1\"/*.json; do " +
+      "  [[ -e $f ]] || continue; printf 'L\\t'; cat \"$f\"; printf '\\n'; " +
+      "done; " +
+      "for f in \"$1/history\"/*.json; do " +
+      "  [[ -e $f ]] || continue; printf 'H\\t'; cat \"$f\"; printf '\\n'; " +
+      "done",
+      "--", root.notificationDir
+    ]
+    stateReader.running = true
+  }
+
+  function parseState(raw) {
+    var nextRows = []
+    var live = 0
+    var lines = String(raw || "").split("\n")
+
+    for (var i = 0; i < lines.length; ++i) {
+      var line = lines[i]
+      if (line.length < 2) continue
+
+      if (line.indexOf("D\t") === 0) {
+        root.dnd = line.substring(2).trim() === "on"
+        continue
+      }
+
+      var isLive = line.indexOf("L\t") === 0
+      var isHistory = line.indexOf("H\t") === 0
+      if (!isLive && !isHistory) continue
+
+      try {
+        var value = JSON.parse(line.substring(2))
+        if (!value || typeof value !== "object") continue
+
+        if (isLive) live++
+
+        nextRows.push({
+          isLive: isLive,
+          id: value.id !== undefined ? value.id : 0,
+          originalId: value.originalId !== undefined ? value.originalId : value.id,
+          app: String(value.app || value.appName || ""),
+          appIcon: String(value.appIcon || ""),
+          summary: String(value.summary || ""),
+          body: String(value.body || ""),
+          image: String(value.image || ""),
+          urgency: Number(value.urgency === undefined ? 1 : value.urgency),
+          timestamp: Number(value.timestamp || 0)
+        })
+      } catch (e) {
+        // Ignore a file caught between write/rename and pick it up next poll.
+      }
+    }
+
+    nextRows.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0) })
+    root.liveCount = live
+    root.rows = nextRows
+  }
+
+  function toggleDnd() {
+    if (dndProc.running) return
+    dndProc.command = ["omarchy-shell", "notifications", "toggleDnd"]
+    dndProc.running = true
+  }
+
+  function dismissAll() {
+    if (actionProc.running) return
+    actionProc.command = ["omarchy-shell", "notifications", "dismissAll"]
+    actionProc.running = true
+  }
+
+  function clearAll() {
+    if (actionProc.running) return
+    actionProc.command = [
+      "bash", "-c",
+      "omarchy-shell notifications dismissAll >/dev/null && " +
+      "omarchy-shell notifications clear >/dev/null"
+    ]
+    actionProc.running = true
+  }
+
+  function dismiss(row) {
+    if (!row || !row.isLive || actionProc.running) return
+    actionProc.command = ["omarchy-shell", "notifications", "dismiss", String(row.summary || "")]
+    actionProc.running = true
+  }
+
+  onPopupOpenChanged: if (popupOpen) refresh()
+
+  Component.onCompleted: refresh()
+
+  Timer {
+    interval: root.popupOpen ? 500 : 2000
+    repeat: true
+    running: true
+    onTriggered: root.refresh()
+  }
+
+  Process {
+    id: stateReader
+    running: false
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.parseState(text)
+    }
+  }
+
+  Process {
+    id: dndProc
+    running: false
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var state = String(text || "").trim()
+        if (state === "on" || state === "off")
+          root.dnd = state === "on"
+      }
+    }
+
+    onExited: root.refresh()
+  }
+
+  Process {
+    id: actionProc
+    running: false
+    onExited: root.refresh()
+  }
 
   readonly property string icon: {
     if (dnd) return "󰂛"
-    if (pendingCount > 0) return "󱅫"
+    if (liveCount > 0) return "󱅫"
     return "󰂚"
   }
 
-  // Theme palette (mirrors HistoryPanel's tokens so the popup matches the
-  // rest of the notification stack).
   readonly property color colForeground: Color.foreground
   readonly property color colDim: Qt.darker(Color.foreground, 1.4)
   readonly property color colBorder: Style.normalBorderFor(Color.foreground, Color.accent)
-  readonly property color colSurface: Style.normalFillFor(Color.foreground, Color.accent)
-  readonly property color colAccent: Color.accent
-  readonly property int cardRadius: notificationService ? notificationService.cornerRadius : 0
+  readonly property int cardRadius: Style.cornerRadius
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -74,18 +189,13 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.icon
-    active: root.pendingCount > 0 && !root.dnd
+    active: root.liveCount > 0 && !root.dnd
     tooltipText: root.dnd ? "Do Not Disturb"
-      : (root.pendingCount > 0 ? root.pendingCount + " pending" : "No notifications")
+      : (root.liveCount > 0 ? root.liveCount + " live" : "No live notifications")
 
     onPressed: function(b) {
-      if (b === Qt.RightButton) {
-        if (root.notificationService) {
-          root.notificationService.setDoNotDisturb(!root.notificationService.doNotDisturb)
-        }
-      } else {
-        root.popupOpen = !root.popupOpen
-      }
+      if (b === Qt.RightButton) root.toggleDnd()
+      else root.popupOpen = !root.popupOpen
     }
   }
 
@@ -95,7 +205,7 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    contentWidth: popup.fittedContentWidth(Style.space(440))
+    contentWidth: popup.fittedContentWidth(Style.space(380))
     contentHeight: popup.cappedContentHeight(Style.space(540))
 
     ColumnLayout {
@@ -117,174 +227,45 @@ BarWidget {
 
         Item { Layout.fillWidth: true }
 
-        BorderSurface {
-          id: dndPill
-          Layout.preferredHeight: Math.max(Style.space(24), Style.font.bodySmall + Style.spacing.controlPaddingY * 2)
-          Layout.preferredWidth: dndLabel.implicitWidth + dndGlyph.implicitWidth + Style.space(18)
-          radius: Math.min(Style.space(12), root.cardRadius + Style.space(6))
-          color: dndOn ? root.colAccent : root.colSurface
-          borderSpec: Border.flat(dndOn ? root.colAccent : root.colBorder, Style.normalBorderWidth)
+        ToggleSwitch {
+          id: dndSwitch
+          checked: root.dnd
+          foreground: root.colForeground
+          onToggled: root.toggleDnd()
 
-          readonly property bool dndOn: !!root.notificationService && root.notificationService.doNotDisturb
-
-          Row {
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-
-            Text {
-              id: dndGlyph
-              text: dndPill.dndOn ? "󰂛" : "󰂚"
-              font.family: root.bar ? root.bar.fontFamily : ""
-              color: dndPill.dndOn ? Color.background : root.colDim
-              font.pixelSize: Style.font.body
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Text {
-              id: dndLabel
-              text: dndPill.dndOn ? "DND on" : "DND off"
-              font.family: root.bar ? root.bar.fontFamily : ""
-              color: dndPill.dndOn ? Color.background : root.colDim
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: if (root.notificationService) root.notificationService.setDoNotDisturb(!dndPill.dndOn)
+          PanelToolTip {
+            visible: dndSwitch.containsMouse
+            text: root.dnd ? "Turn Do Not Disturb off" : "Turn Do Not Disturb on"
+            fontFamily: root.bar ? root.bar.fontFamily : ""
           }
         }
       }
 
-      // ----------------------------------------- tabs
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: 0
-
-        Repeater {
-          model: [
-            { key: "pending", label: "Pending",  count: root.pendingCount },
-            { key: "past",    label: "Recently", count: root.pastCount }
-          ]
-          delegate: Rectangle {
-            required property var modelData
-            readonly property bool isActive: root.activeTab === modelData.key
-
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.max(Style.space(30), Style.font.body + Style.spacing.controlPaddingY * 2)
-            color: "transparent"
-
-            Text {
-              anchors.centerIn: parent
-              text: modelData.label + (modelData.count > 0 ? "  " + modelData.count : "")
-              font.family: root.bar ? root.bar.fontFamily : ""
-              color: parent.isActive ? root.colForeground : root.colDim
-              font.pixelSize: Style.font.body
-              font.bold: parent.isActive
-            }
-
-            Rectangle {
-              anchors.left: parent.left
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              height: Math.max(1, Style.space(2))
-              color: parent.isActive ? root.colAccent : root.colBorder
-              opacity: parent.isActive ? 1 : 0.4
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.activeTab = modelData.key
-            }
-          }
-        }
-      }
-
-      // ----------------------------------------- action row
-      RowLayout {
-        Layout.fillWidth: true
-        visible: (root.activeTab === "pending" && root.pendingCount > 0)
-              || (root.activeTab === "past" && root.pastCount > 0)
-        spacing: Style.space(8)
-
-        Item { Layout.fillWidth: true }
-
-        BorderSurface {
-          Layout.preferredWidth: actionLabel.implicitWidth + Style.space(16)
-          Layout.preferredHeight: Math.max(Style.space(22), Style.font.bodySmall + Style.spacing.controlPaddingY * 2)
-          radius: Math.min(Style.space(6), root.cardRadius)
-          color: actionArea.containsMouse ? root.colBorder : "transparent"
-          borderSpec: Border.flat(root.colBorder, Style.normalBorderWidth)
-
-          Text {
-            id: actionLabel
-            anchors.centerIn: parent
-            text: root.activeTab === "pending" ? "Mark all as seen" : "Clear recent"
-            font.family: root.bar ? root.bar.fontFamily : ""
-            color: root.colForeground
-            font.pixelSize: Style.font.caption
-          }
-
-          MouseArea {
-            id: actionArea
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              if (!root.notificationService) return
-              if (root.activeTab === "pending") root.notificationService.markAllSeen()
-              else root.notificationService.clearPast()
-            }
-          }
-        }
-      }
-
-      // ----------------------------------------- list
+      // ----------------------------------------- unified list
       ListView {
         id: listView
         Layout.fillWidth: true
         Layout.fillHeight: true
         clip: true
         spacing: Style.space(8)
-
-        readonly property bool onPending: root.activeTab === "pending"
-        model: !root.notificationService ? null
-              : (onPending ? root.notificationService.pendingModel : root.notificationService.pastModel)
+        model: root.rows
         visible: count > 0
 
         delegate: BorderSurface {
           id: rowCard
-          required property int index
-          required property string app
-          required property string appIcon
-          required property string summary
-          required property string body
-          required property string image
-          required property int urgency
-          required property double timestamp
+          required property var modelData
 
-          readonly property bool hasMedia: image.length > 0 && (
-            image.indexOf("image://icon//") === 0 || image.indexOf("file://") === 0)
-          readonly property string smallIconSource: image.length > 0 ? image : root.notificationIconSource(appIcon)
-          readonly property bool hasIcon: !hasMedia && smallIconSource.length > 0
-          readonly property string sanitizedBody: root.sanitizeBody(body, app, appIcon)
+          readonly property string iconValue: String(modelData.image || modelData.appIcon || "")
+          readonly property string smallIconSource: root.notificationIconSource(iconValue)
+          readonly property bool hasIcon: smallIconSource.length > 0
+          readonly property string sanitizedBody: root.sanitizeBody(
+            modelData.body, modelData.app, modelData.appIcon)
 
           width: listView.width
           implicitHeight: rowContent.implicitHeight + Style.spacing.panelGap
           radius: root.cardRadius
           color: "transparent"
           borderSpec: Border.flat(root.colBorder, Style.normalBorderWidth)
-
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: { /* no-op */ }
-          }
 
           RowLayout {
             id: rowContent
@@ -300,15 +281,13 @@ BarWidget {
               Layout.preferredWidth: Style.space(32)
               Layout.preferredHeight: Style.space(32)
               Layout.alignment: Qt.AlignVCenter
-              // Hide on icon load failure so unresolved themed-icon names
-              // don't render Qt's broken-image placeholder.
-              visible: (rowCard.hasIcon || rowCard.hasMedia) && rowIconImage.status !== Image.Error
+              visible: rowCard.hasIcon && rowIconImage.status !== Image.Error
 
               Image {
                 id: rowIconImage
                 anchors.fill: parent
-                source: rowCard.hasMedia ? rowCard.image : rowCard.smallIconSource
-                fillMode: rowCard.hasMedia ? Image.PreserveAspectCrop : Image.PreserveAspectFit
+                source: rowCard.smallIconSource
+                fillMode: Image.PreserveAspectFit
                 sourceSize.width: imageSlot.width * Screen.devicePixelRatio
                 sourceSize.height: imageSlot.height * Screen.devicePixelRatio
                 asynchronous: true
@@ -320,17 +299,30 @@ BarWidget {
               Layout.fillWidth: true
               spacing: Style.space(2)
 
-              Text {
+              RowLayout {
                 Layout.fillWidth: true
-                visible: rowCard.summary.length > 0
-                text: rowCard.summary
-                font.family: root.bar ? root.bar.fontFamily : ""
-                color: root.colForeground
-                font.pixelSize: Style.font.subtitle
-                font.bold: true
-                wrapMode: Text.WordWrap
-                elide: Text.ElideRight
-                maximumLineCount: 1
+                spacing: Style.space(6)
+
+                Text {
+                  Layout.fillWidth: true
+                  visible: String(rowCard.modelData.summary || "").length > 0
+                  text: rowCard.modelData.summary
+                  font.family: root.bar ? root.bar.fontFamily : ""
+                  color: root.colForeground
+                  font.pixelSize: Style.font.subtitle
+                  font.bold: rowCard.modelData.isLive
+                  elide: Text.ElideRight
+                  maximumLineCount: 1
+                }
+
+                Rectangle {
+                  visible: rowCard.modelData.isLive
+                  Layout.preferredWidth: Style.space(6)
+                  Layout.preferredHeight: Style.space(6)
+                  Layout.alignment: Qt.AlignVCenter
+                  radius: width / 2
+                  color: Color.accent
+                }
               }
 
               Text {
@@ -348,6 +340,7 @@ BarWidget {
             }
 
             Rectangle {
+              visible: rowCard.modelData.isLive
               Layout.preferredWidth: Style.space(18)
               Layout.preferredHeight: Style.space(18)
               Layout.alignment: Qt.AlignVCenter
@@ -367,11 +360,7 @@ BarWidget {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  if (!root.notificationService) return
-                  if (listView.onPending) root.notificationService.dismissPending(rowCard.index)
-                  else root.notificationService.dismissPast(rowCard.index)
-                }
+                onClicked: root.dismiss(rowCard.modelData)
               }
             }
           }
@@ -382,7 +371,7 @@ BarWidget {
       Item {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        visible: listView.count === 0
+        visible: root.rows.length === 0
 
         ColumnLayout {
           anchors.centerIn: parent
@@ -398,15 +387,64 @@ BarWidget {
 
           Text {
             Layout.alignment: Qt.AlignHCenter
-            text: root.activeTab === "pending"
-              ? "Nothing waiting for you"
-              : "Nothing recent"
+            text: "No notifications"
             font.family: root.bar ? root.bar.fontFamily : ""
             color: root.colDim
             font.pixelSize: Style.font.body
           }
         }
       }
+
+      // ----------------------------------------- footer actions
+      RowLayout {
+        Layout.fillWidth: true
+        visible: root.rows.length > 0
+        spacing: Style.space(8)
+
+        FooterAction {
+          Layout.fillWidth: true
+          text: "Dismiss all"
+          enabled: root.liveCount > 0
+          onClicked: root.dismissAll()
+        }
+
+        FooterAction {
+          Layout.fillWidth: true
+          text: "Clear"
+          onClicked: root.clearAll()
+        }
+      }
+    }
+  }
+
+  component FooterAction: BorderSurface {
+    id: action
+
+    property string text: ""
+    signal clicked()
+
+    Layout.preferredHeight: Math.max(Style.space(28), Style.font.bodySmall + Style.spacing.controlPaddingY * 2)
+    radius: Math.min(Style.space(6), root.cardRadius)
+    color: actionArea.containsMouse && action.enabled ? root.colBorder : "transparent"
+    borderSpec: Border.flat(root.colBorder, Style.normalBorderWidth)
+    opacity: action.enabled ? 1 : 0.45
+
+    Text {
+      anchors.centerIn: parent
+      text: action.text
+      font.family: root.bar ? root.bar.fontFamily : ""
+      color: root.colForeground
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+
+    MouseArea {
+      id: actionArea
+      anchors.fill: parent
+      enabled: action.enabled
+      hoverEnabled: true
+      cursorShape: action.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: action.clicked()
     }
   }
 }

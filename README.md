@@ -1,24 +1,51 @@
 # Omarchy Notification Center
 
-An optional bar widget for reviewing notifications handled by Omarchy's
-built-in notification service.
+A compact notification center for Omarchy, built on top of Omarchy's existing
+notification service.
 
-It adds:
+This fork keeps the notification backend untouched and focuses on making the
+bar popup feel like a native Omarchy panel.
 
-- a Pending tab for unseen notifications;
-- a Recently tab for notifications already shown;
-- per-notification dismissal;
-- Mark All as Seen and Clear Recent actions;
-- a Do Not Disturb toggle.
+It provides:
 
-The notification daemon, toast popups, history storage, DND state, and the
-standard DND indicator remain part of Omarchy itself. This plugin only provides
-the bar popup for browsing that history.
+- one unified notification list instead of separate Pending / Recently tabs;
+- live notifications highlighted in the same list;
+- a Do Not Disturb switch using Omarchy's native `ToggleSwitch`;
+- a compact panel width matching the Network, Bluetooth and Audio panels;
+- dismissal for notifications that are still live;
+- `Dismiss all` and `Clear` actions at the bottom.
+
+The notification daemon, toast popups, history storage and DND state remain
+owned by Omarchy itself. This plugin is only a UI for browsing and managing
+that state.
+
+## Notification state
+
+Current Omarchy persists notification state under
+`~/.local/state/omarchy/notifications/`:
+
+- JSON files directly in that directory are notifications still live on screen;
+- files under `history/` are notifications that have left the screen.
+
+The plugin reads those persisted files and presents both stages as one
+continuous notification feed. It deliberately does not invent a separate
+read/unread state that Omarchy itself does not expose.
+
+The plugin uses Omarchy's public boundaries rather than private service models:
+
+- DND uses Omarchy's documented `omarchy-shell notifications` IPC;
+- **Dismiss all** calls `omarchy-shell notifications dismissAll`, which
+  lets Omarchy archive live notifications into history;
+- **Clear** dismisses live notifications and clears recorded history.
+
+The plugin does not replace the notification daemon or maintain a second
+notification database, and it does not depend on private first-party service
+models.
 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/omacom-io/omarchy-notification-center-plugin.git --enable
+omarchy plugin add https://github.com/lsongdev/omarchy-notification-center.git --enable
 ```
 
 The widget can be positioned explicitly:
@@ -35,10 +62,10 @@ Validate the manifest and entry point:
 omarchy plugin validate .
 ```
 
-After changing plugin files:
+Files under `~/.config/omarchy/plugins/` are reloaded automatically while
+developing. For a clean full-shell reload after larger QML changes:
 
 ```bash
-omarchy plugin rescan
 omarchy restart shell
 ```
 
