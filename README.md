@@ -21,13 +21,18 @@ that state.
 
 ## Notification state
 
-Omarchy exposes two underlying collections:
+Current Omarchy keeps notifications in two stages:
 
-- `pendingModel` contains notifications that have not been marked as seen;
-- `pastModel` contains notifications that have moved into recent history.
+- `popupModel` contains notifications that are still live on screen;
+- once a popup leaves the screen, Omarchy archives it under `historyDir`.
 
-The UI intentionally presents both collections as one continuous notification
-feed. No notification service behavior is changed by this plugin.
+The UI presents both stages as one continuous notification feed. Live
+notifications are treated as unread; **Mark all as read** dismisses the live
+popup stack, which lets Omarchy archive those notifications into history.
+**Clear** removes both live notifications and stored history.
+
+The plugin does not replace the notification daemon or maintain a second
+notification database.
 
 ## Install
 
