@@ -65,7 +65,7 @@ BarWidget {
       if (line.length < 2) continue
 
       if (line.indexOf("D\t") === 0) {
-        root.dnd = line.substring(2).trim() === "true"
+        root.dnd = line.substring(2).trim() === "on"
         continue
       }
 
@@ -134,7 +134,7 @@ BarWidget {
   Component.onCompleted: refresh()
 
   Timer {
-    interval: 1000
+    interval: root.popupOpen ? 500 : 2000
     repeat: true
     running: true
     onTriggered: root.refresh()
