@@ -13,7 +13,7 @@ BarWidget {
   property bool popupOpen: false
   property bool dnd: false
   property var rows: []
-  property int unreadCount: 0
+  property int liveCount: 0
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string notificationDir: home + "/.local/state/omarchy/notifications"
@@ -94,7 +94,7 @@ BarWidget {
     }
 
     nextRows.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0) })
-    root.unreadCount = live
+    root.liveCount = live
     root.rows = nextRows
   }
 
@@ -104,7 +104,7 @@ BarWidget {
     dndProc.running = true
   }
 
-  function markAllRead() {
+  function dismissAll() {
     if (actionProc.running) return
     actionProc.command = ["omarchy-shell", "notifications", "dismissAll"]
     actionProc.running = true
@@ -171,7 +171,7 @@ BarWidget {
 
   readonly property string icon: {
     if (dnd) return "󰂛"
-    if (unreadCount > 0) return "󱅫"
+    if (liveCount > 0) return "󱅫"
     return "󰂚"
   }
 
@@ -188,9 +188,9 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.icon
-    active: root.unreadCount > 0 && !root.dnd
+    active: root.liveCount > 0 && !root.dnd
     tooltipText: root.dnd ? "Do Not Disturb"
-      : (root.unreadCount > 0 ? root.unreadCount + " unread" : "No unread notifications")
+      : (root.liveCount > 0 ? root.liveCount + " live" : "No live notifications")
 
     onPressed: function(b) {
       if (b === Qt.RightButton) root.toggleDnd()
@@ -402,9 +402,9 @@ BarWidget {
 
         FooterAction {
           Layout.fillWidth: true
-          text: "Mark all as read"
-          enabled: root.unreadCount > 0
-          onClicked: root.markAllRead()
+          text: "Dismiss all"
+          enabled: root.liveCount > 0
+          onClicked: root.dismissAll()
         }
 
         FooterAction {
