@@ -361,7 +361,6 @@ BarWidget {
     id: action
 
     property string text: ""
-    property bool enabled: true
     signal clicked()
 
     Layout.preferredHeight: Math.max(Style.space(28), Style.font.bodySmall + Style.spacing.controlPaddingY * 2)
@@ -384,7 +383,7 @@ BarWidget {
       anchors.fill: parent
       enabled: action.enabled
       hoverEnabled: true
-      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      cursorShape: action.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
       onClicked: action.clicked()
     }
   }
