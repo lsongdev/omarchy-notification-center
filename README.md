@@ -1,24 +1,38 @@
 # Omarchy Notification Center
 
-An optional bar widget for reviewing notifications handled by Omarchy's
-built-in notification service.
+A compact notification center for Omarchy, built on top of Omarchy's existing
+notification service.
 
-It adds:
+This fork keeps the notification backend untouched and focuses on making the
+bar popup feel like a native Omarchy panel.
 
-- a Pending tab for unseen notifications;
-- a Recently tab for notifications already shown;
+It provides:
+
+- one unified notification list instead of separate Pending / Recently tabs;
+- unread notifications highlighted in the same list;
+- a Do Not Disturb switch using Omarchy's native `ToggleSwitch`;
+- a compact panel width matching the Network, Bluetooth and Audio panels;
 - per-notification dismissal;
-- Mark All as Seen and Clear Recent actions;
-- a Do Not Disturb toggle.
+- `Mark all as read` and `Clear` actions at the bottom.
 
-The notification daemon, toast popups, history storage, DND state, and the
-standard DND indicator remain part of Omarchy itself. This plugin only provides
-the bar popup for browsing that history.
+The notification daemon, toast popups, history storage and DND state remain
+owned by Omarchy itself. This plugin is only a UI for browsing and managing
+that state.
+
+## Notification state
+
+Omarchy exposes two underlying collections:
+
+- `pendingModel` contains notifications that have not been marked as seen;
+- `pastModel` contains notifications that have moved into recent history.
+
+The UI intentionally presents both collections as one continuous notification
+feed. No notification service behavior is changed by this plugin.
 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/omacom-io/omarchy-notification-center-plugin.git --enable
+omarchy plugin add https://github.com/lsongdev/omarchy-notification-center.git --enable
 ```
 
 The widget can be positioned explicitly:
