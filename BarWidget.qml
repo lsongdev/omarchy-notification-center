@@ -9,21 +9,12 @@ BarWidget {
   id: root
   moduleName: "omacom.notification-center"
 
-
   property bool popupOpen: false
-  function close() { popupOpen = false }
 
-  // Always default to the pending tab when there's anything unseen, no
-  // matter how the popup was opened (click, keybind/IPC, or the close
-  // path). Keeps the spec from drifting based on the user's last manual
-  // tab selection.
-  onPopupOpenChanged: {
-    if (popupOpen) {
-      activeTab = pendingCount > 0 ? "pending" : "past"
-    }
+  function close() {
+    popupOpen = false
   }
 
-  // Look up the long-running notifications service through the shell host.
   readonly property var hostShell: bar && bar.shell ? bar.shell : null
   readonly property var notificationService: hostShell?.firstPartyServiceFor("omarchy.notifications")
 
@@ -43,13 +34,22 @@ BarWidget {
     return Quickshell.iconPath(value, true)
   }
 
+  function clearAllNotifications() {
+    if (!notificationService) return
+
+    // Dismiss pending notifications first, then clear the history they may
+    // have moved into. Keep this as UI orchestration and leave storage/state
+    // semantics owned by Omarchy's notification service.
+    for (var i = notificationService.pendingModel.count - 1; i >= 0; --i)
+      notificationService.dismissPending(i)
+
+    notificationService.clearPast()
+  }
+
   readonly property int pendingCount: notificationService ? notificationService.pendingModel.count : 0
   readonly property int pastCount: notificationService ? notificationService.pastModel.count : 0
+  readonly property int totalCount: pendingCount + pastCount
   readonly property bool dnd: notificationService ? notificationService.doNotDisturb : false
-
-  // Which tab is active in the popup. Auto-selects pending when there's
-  // something unseen; otherwise opens past.
-  property string activeTab: "pending"
 
   readonly property string icon: {
     if (dnd) return "󰂛"
@@ -57,13 +57,9 @@ BarWidget {
     return "󰂚"
   }
 
-  // Theme palette (mirrors HistoryPanel's tokens so the popup matches the
-  // rest of the notification stack).
   readonly property color colForeground: Color.foreground
   readonly property color colDim: Qt.darker(Color.foreground, 1.4)
   readonly property color colBorder: Style.normalBorderFor(Color.foreground, Color.accent)
-  readonly property color colSurface: Style.normalFillFor(Color.foreground, Color.accent)
-  readonly property color colAccent: Color.accent
   readonly property int cardRadius: notificationService ? notificationService.cornerRadius : 0
 
   implicitWidth: button.implicitWidth
@@ -76,13 +72,12 @@ BarWidget {
     text: root.icon
     active: root.pendingCount > 0 && !root.dnd
     tooltipText: root.dnd ? "Do Not Disturb"
-      : (root.pendingCount > 0 ? root.pendingCount + " pending" : "No notifications")
+      : (root.pendingCount > 0 ? root.pendingCount + " unread" : "No unread notifications")
 
     onPressed: function(b) {
       if (b === Qt.RightButton) {
-        if (root.notificationService) {
+        if (root.notificationService)
           root.notificationService.setDoNotDisturb(!root.notificationService.doNotDisturb)
-        }
       } else {
         root.popupOpen = !root.popupOpen
       }
@@ -95,7 +90,9 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    contentWidth: popup.fittedContentWidth(Style.space(440))
+
+    // Match the standard Network, Bluetooth and Audio panels.
+    contentWidth: popup.fittedContentWidth(Style.space(380))
     contentHeight: popup.cappedContentHeight(Style.space(540))
 
     ColumnLayout {
@@ -107,272 +104,75 @@ BarWidget {
         Layout.fillWidth: true
         spacing: Style.space(8)
 
-        Text {
-          text: "Notifications"
-          font.family: root.bar ? root.bar.fontFamily : ""
-          color: root.colForeground
-          font.pixelSize: Style.font.title
-          font.bold: true
-        }
-
-        Item { Layout.fillWidth: true }
-
-        BorderSurface {
-          id: dndPill
-          Layout.preferredHeight: Math.max(Style.space(24), Style.font.bodySmall + Style.spacing.controlPaddingY * 2)
-          Layout.preferredWidth: dndLabel.implicitWidth + dndGlyph.implicitWidth + Style.space(18)
-          radius: Math.min(Style.space(12), root.cardRadius + Style.space(6))
-          color: dndOn ? root.colAccent : root.colSurface
-          borderSpec: Border.flat(dndOn ? root.colAccent : root.colBorder, Style.normalBorderWidth)
-
-          readonly property bool dndOn: !!root.notificationService && root.notificationService.doNotDisturb
-
-          Row {
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-
-            Text {
-              id: dndGlyph
-              text: dndPill.dndOn ? "󰂛" : "󰂚"
-              font.family: root.bar ? root.bar.fontFamily : ""
-              color: dndPill.dndOn ? Color.background : root.colDim
-              font.pixelSize: Style.font.body
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Text {
-              id: dndLabel
-              text: dndPill.dndOn ? "DND on" : "DND off"
-              font.family: root.bar ? root.bar.fontFamily : ""
-              color: dndPill.dndOn ? Color.background : root.colDim
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: if (root.notificationService) root.notificationService.setDoNotDisturb(!dndPill.dndOn)
-          }
-        }
-      }
-
-      // ----------------------------------------- tabs
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: 0
-
-        Repeater {
-          model: [
-            { key: "pending", label: "Pending",  count: root.pendingCount },
-            { key: "past",    label: "Recently", count: root.pastCount }
-          ]
-          delegate: Rectangle {
-            required property var modelData
-            readonly property bool isActive: root.activeTab === modelData.key
-
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.max(Style.space(30), Style.font.body + Style.spacing.controlPaddingY * 2)
-            color: "transparent"
-
-            Text {
-              anchors.centerIn: parent
-              text: modelData.label + (modelData.count > 0 ? "  " + modelData.count : "")
-              font.family: root.bar ? root.bar.fontFamily : ""
-              color: parent.isActive ? root.colForeground : root.colDim
-              font.pixelSize: Style.font.body
-              font.bold: parent.isActive
-            }
-
-            Rectangle {
-              anchors.left: parent.left
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              height: Math.max(1, Style.space(2))
-              color: parent.isActive ? root.colAccent : root.colBorder
-              opacity: parent.isActive ? 1 : 0.4
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.activeTab = modelData.key
-            }
-          }
-        }
-      }
-
-      // ----------------------------------------- action row
-      RowLayout {
-        Layout.fillWidth: true
-        visible: (root.activeTab === "pending" && root.pendingCount > 0)
-              || (root.activeTab === "past" && root.pastCount > 0)
-        spacing: Style.space(8)
-
-        Item { Layout.fillWidth: true }
-
-        BorderSurface {
-          Layout.preferredWidth: actionLabel.implicitWidth + Style.space(16)
-          Layout.preferredHeight: Math.max(Style.space(22), Style.font.bodySmall + Style.spacing.controlPaddingY * 2)
-          radius: Math.min(Style.space(6), root.cardRadius)
-          color: actionArea.containsMouse ? root.colBorder : "transparent"
-          borderSpec: Border.flat(root.colBorder, Style.normalBorderWidth)
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(2)
 
           Text {
-            id: actionLabel
-            anchors.centerIn: parent
-            text: root.activeTab === "pending" ? "Mark all as seen" : "Clear recent"
+            text: "Notifications"
             font.family: root.bar ? root.bar.fontFamily : ""
             color: root.colForeground
-            font.pixelSize: Style.font.caption
+            font.pixelSize: Style.font.title
+            font.bold: true
           }
 
-          MouseArea {
-            id: actionArea
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              if (!root.notificationService) return
-              if (root.activeTab === "pending") root.notificationService.markAllSeen()
-              else root.notificationService.clearPast()
-            }
+          Text {
+            visible: root.pendingCount > 0
+            text: root.pendingCount + (root.pendingCount === 1 ? " unread notification" : " unread notifications")
+            font.family: root.bar ? root.bar.fontFamily : ""
+            color: root.colDim
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        ToggleSwitch {
+          id: dndSwitch
+          checked: root.dnd
+          foreground: root.colForeground
+          onToggled: {
+            if (root.notificationService)
+              root.notificationService.setDoNotDisturb(!root.dnd)
+          }
+
+          PanelToolTip {
+            visible: dndSwitch.containsMouse
+            text: root.dnd ? "Turn Do Not Disturb off" : "Turn Do Not Disturb on"
+            fontFamily: root.bar ? root.bar.fontFamily : ""
           }
         }
       }
 
-      // ----------------------------------------- list
-      ListView {
-        id: listView
+      // ----------------------------------------- unified list
+      Flickable {
+        id: scrollArea
         Layout.fillWidth: true
         Layout.fillHeight: true
         clip: true
-        spacing: Style.space(8)
+        contentWidth: width
+        contentHeight: listColumn.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        visible: root.totalCount > 0
 
-        readonly property bool onPending: root.activeTab === "pending"
-        model: !root.notificationService ? null
-              : (onPending ? root.notificationService.pendingModel : root.notificationService.pastModel)
-        visible: count > 0
+        Column {
+          id: listColumn
+          width: scrollArea.width
+          spacing: Style.space(8)
 
-        delegate: BorderSurface {
-          id: rowCard
-          required property int index
-          required property string app
-          required property string appIcon
-          required property string summary
-          required property string body
-          required property string image
-          required property int urgency
-          required property double timestamp
+          Repeater {
+            model: root.notificationService ? root.notificationService.pendingModel : null
 
-          readonly property bool hasMedia: image.length > 0 && (
-            image.indexOf("image://icon//") === 0 || image.indexOf("file://") === 0)
-          readonly property string smallIconSource: image.length > 0 ? image : root.notificationIconSource(appIcon)
-          readonly property bool hasIcon: !hasMedia && smallIconSource.length > 0
-          readonly property string sanitizedBody: root.sanitizeBody(body, app, appIcon)
-
-          width: listView.width
-          implicitHeight: rowContent.implicitHeight + Style.spacing.panelGap
-          radius: root.cardRadius
-          color: "transparent"
-          borderSpec: Border.flat(root.colBorder, Style.normalBorderWidth)
-
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: { /* no-op */ }
+            delegate: NotificationRow {
+              pendingRow: true
+              width: listColumn.width
+            }
           }
 
-          RowLayout {
-            id: rowContent
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: rowCard.borderLeft + Style.space(12)
-            anchors.rightMargin: rowCard.borderRight + Style.space(12)
-            spacing: Style.space(10)
+          Repeater {
+            model: root.notificationService ? root.notificationService.pastModel : null
 
-            Item {
-              id: imageSlot
-              Layout.preferredWidth: Style.space(32)
-              Layout.preferredHeight: Style.space(32)
-              Layout.alignment: Qt.AlignVCenter
-              // Hide on icon load failure so unresolved themed-icon names
-              // don't render Qt's broken-image placeholder.
-              visible: (rowCard.hasIcon || rowCard.hasMedia) && rowIconImage.status !== Image.Error
-
-              Image {
-                id: rowIconImage
-                anchors.fill: parent
-                source: rowCard.hasMedia ? rowCard.image : rowCard.smallIconSource
-                fillMode: rowCard.hasMedia ? Image.PreserveAspectCrop : Image.PreserveAspectFit
-                sourceSize.width: imageSlot.width * Screen.devicePixelRatio
-                sourceSize.height: imageSlot.height * Screen.devicePixelRatio
-                asynchronous: true
-                smooth: true
-              }
-            }
-
-            ColumnLayout {
-              Layout.fillWidth: true
-              spacing: Style.space(2)
-
-              Text {
-                Layout.fillWidth: true
-                visible: rowCard.summary.length > 0
-                text: rowCard.summary
-                font.family: root.bar ? root.bar.fontFamily : ""
-                color: root.colForeground
-                font.pixelSize: Style.font.subtitle
-                font.bold: true
-                wrapMode: Text.WordWrap
-                elide: Text.ElideRight
-                maximumLineCount: 1
-              }
-
-              Text {
-                Layout.fillWidth: true
-                visible: rowCard.sanitizedBody.length > 0
-                text: rowCard.sanitizedBody
-                font.family: root.bar ? root.bar.fontFamily : ""
-                textFormat: Text.PlainText
-                color: root.colDim
-                font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
-                elide: Text.ElideRight
-                maximumLineCount: 2
-              }
-            }
-
-            Rectangle {
-              Layout.preferredWidth: Style.space(18)
-              Layout.preferredHeight: Style.space(18)
-              Layout.alignment: Qt.AlignVCenter
-              radius: Math.min(4, root.cardRadius)
-              color: rowCloseArea.containsMouse ? root.colBorder : "transparent"
-
-              Text {
-                anchors.centerIn: parent
-                text: "✕"
-                font.family: root.bar ? root.bar.fontFamily : ""
-                color: root.colDim
-                font.pixelSize: Style.font.bodySmall
-              }
-
-              MouseArea {
-                id: rowCloseArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  if (!root.notificationService) return
-                  if (listView.onPending) root.notificationService.dismissPending(rowCard.index)
-                  else root.notificationService.dismissPast(rowCard.index)
-                }
-              }
+            delegate: NotificationRow {
+              pendingRow: false
+              width: listColumn.width
             }
           }
         }
@@ -382,7 +182,7 @@ BarWidget {
       Item {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        visible: listView.count === 0
+        visible: root.totalCount === 0
 
         ColumnLayout {
           anchors.centerIn: parent
@@ -398,15 +198,194 @@ BarWidget {
 
           Text {
             Layout.alignment: Qt.AlignHCenter
-            text: root.activeTab === "pending"
-              ? "Nothing waiting for you"
-              : "Nothing recent"
+            text: "No notifications"
             font.family: root.bar ? root.bar.fontFamily : ""
             color: root.colDim
             font.pixelSize: Style.font.body
           }
         }
       }
+
+      // ----------------------------------------- footer actions
+      RowLayout {
+        Layout.fillWidth: true
+        visible: root.totalCount > 0
+        spacing: Style.space(8)
+
+        FooterAction {
+          Layout.fillWidth: true
+          text: "Mark all as read"
+          enabled: root.pendingCount > 0
+          onClicked: {
+            if (root.notificationService) root.notificationService.markAllSeen()
+          }
+        }
+
+        FooterAction {
+          Layout.fillWidth: true
+          text: "Clear"
+          onClicked: root.clearAllNotifications()
+        }
+      }
+    }
+  }
+
+  component NotificationRow: BorderSurface {
+    id: rowCard
+
+    required property int index
+    required property string app
+    required property string appIcon
+    required property string summary
+    required property string body
+    required property string image
+    required property int urgency
+    required property double timestamp
+    property bool pendingRow: false
+
+    readonly property bool hasMedia: image.length > 0 && (
+      image.indexOf("image://icon//") === 0 || image.indexOf("file://") === 0)
+    readonly property string smallIconSource: image.length > 0 ? image : root.notificationIconSource(appIcon)
+    readonly property bool hasIcon: !hasMedia && smallIconSource.length > 0
+    readonly property string sanitizedBody: root.sanitizeBody(body, app, appIcon)
+
+    implicitHeight: rowContent.implicitHeight + Style.spacing.panelGap
+    radius: root.cardRadius
+    color: "transparent"
+    borderSpec: Border.flat(root.colBorder, Style.normalBorderWidth)
+
+    RowLayout {
+      id: rowContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: rowCard.borderLeft + Style.space(12)
+      anchors.rightMargin: rowCard.borderRight + Style.space(12)
+      spacing: Style.space(10)
+
+      Item {
+        id: imageSlot
+        Layout.preferredWidth: Style.space(32)
+        Layout.preferredHeight: Style.space(32)
+        Layout.alignment: Qt.AlignVCenter
+        visible: (rowCard.hasIcon || rowCard.hasMedia) && rowIconImage.status !== Image.Error
+
+        Image {
+          id: rowIconImage
+          anchors.fill: parent
+          source: rowCard.hasMedia ? rowCard.image : rowCard.smallIconSource
+          fillMode: rowCard.hasMedia ? Image.PreserveAspectCrop : Image.PreserveAspectFit
+          sourceSize.width: imageSlot.width * Screen.devicePixelRatio
+          sourceSize.height: imageSlot.height * Screen.devicePixelRatio
+          asynchronous: true
+          smooth: true
+        }
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(2)
+
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+
+          Text {
+            Layout.fillWidth: true
+            visible: rowCard.summary.length > 0
+            text: rowCard.summary
+            font.family: root.bar ? root.bar.fontFamily : ""
+            color: root.colForeground
+            font.pixelSize: Style.font.subtitle
+            font.bold: rowCard.pendingRow
+            wrapMode: Text.WordWrap
+            elide: Text.ElideRight
+            maximumLineCount: 1
+          }
+
+          Rectangle {
+            visible: rowCard.pendingRow
+            Layout.preferredWidth: Style.space(6)
+            Layout.preferredHeight: Style.space(6)
+            Layout.alignment: Qt.AlignVCenter
+            radius: width / 2
+            color: Color.accent
+          }
+        }
+
+        Text {
+          Layout.fillWidth: true
+          visible: rowCard.sanitizedBody.length > 0
+          text: rowCard.sanitizedBody
+          font.family: root.bar ? root.bar.fontFamily : ""
+          textFormat: Text.PlainText
+          color: root.colDim
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+          elide: Text.ElideRight
+          maximumLineCount: 2
+        }
+      }
+
+      Rectangle {
+        Layout.preferredWidth: Style.space(18)
+        Layout.preferredHeight: Style.space(18)
+        Layout.alignment: Qt.AlignVCenter
+        radius: Math.min(4, root.cardRadius)
+        color: rowCloseArea.containsMouse ? root.colBorder : "transparent"
+
+        Text {
+          anchors.centerIn: parent
+          text: "✕"
+          font.family: root.bar ? root.bar.fontFamily : ""
+          color: root.colDim
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        MouseArea {
+          id: rowCloseArea
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: {
+            if (!root.notificationService) return
+            if (rowCard.pendingRow) root.notificationService.dismissPending(rowCard.index)
+            else root.notificationService.dismissPast(rowCard.index)
+          }
+        }
+      }
+    }
+  }
+
+  component FooterAction: BorderSurface {
+    id: action
+
+    property string text: ""
+    property bool enabled: true
+    signal clicked()
+
+    Layout.preferredHeight: Math.max(Style.space(28), Style.font.bodySmall + Style.spacing.controlPaddingY * 2)
+    radius: Math.min(Style.space(6), root.cardRadius)
+    color: actionArea.containsMouse && enabled ? root.colBorder : "transparent"
+    borderSpec: Border.flat(root.colBorder, Style.normalBorderWidth)
+    opacity: enabled ? 1 : 0.45
+
+    Text {
+      anchors.centerIn: parent
+      text: action.text
+      font.family: root.bar ? root.bar.fontFamily : ""
+      color: root.colForeground
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+
+    MouseArea {
+      id: actionArea
+      anchors.fill: parent
+      enabled: action.enabled
+      hoverEnabled: true
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: action.clicked()
     }
   }
 }
