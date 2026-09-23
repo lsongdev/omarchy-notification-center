@@ -33,7 +33,7 @@ read/unread state that Omarchy itself does not expose.
 
 The plugin uses Omarchy's public boundaries rather than private service models:
 
-- DND binds to the notification service proxy exposed to third-party bar widgets;
+- DND uses Omarchy's documented `omarchy-shell notifications` IPC;
 - **Dismiss all** calls `omarchy-shell notifications dismissAll`, which
   lets Omarchy archive live notifications into history;
 - **Clear** dismisses live notifications and clears recorded history.
